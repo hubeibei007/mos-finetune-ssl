@@ -1,3 +1,8 @@
+# Correlation Loss for MOS Prediction of Synthetic Speech
+This is code for VoiceMOS Challenge. The baseline is https://github.com/nii-yamagishilab/mos-finetune-ssl
+
+updating...
+
 # Finetune SSL models for MOS prediction
 
 This is code for our paper which has been accepted to ICASSP 2022:
