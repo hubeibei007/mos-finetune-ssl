@@ -16,6 +16,26 @@ from torch.utils.data import DataLoader
 import random
 random.seed(1984)
 
+import numpy as np
+import scipy.stats
+import csv
+
+from sodeep_master.sodeep import load_sorter, SpearmanLoss
+
+def save_results(ep, valid_result, test_result, result_path):
+    if os.path.isfile(result_path):
+        with open(result_path, "r", newline='') as csvfile:
+            rows = list(csv.reader(csvfile))
+        data = {row[0]: row[1:] for row in rows}
+    else:
+        data = {}
+    data[str(ep)] = valid_result + test_result
+    rows = [[k]+v for k, v in data.items()]
+    rows = sorted(rows, key=lambda x:int(x[0]))
+    with open(result_path, "w", newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerows(rows)
+
 class MosPredictor(nn.Module):
     def __init__(self, ssl_model, ssl_out_dim):
         super(MosPredictor, self).__init__()
@@ -72,13 +92,84 @@ class MyDataset(Dataset):
         scores  = torch.stack([torch.tensor(x) for x in list(scores)], dim=0)
         return output_wavs, scores, wavnames
 
-    
+def lcc_loss_fn(outputs, labels):
+    #void division by zero
+    if outputs.std() == 0.0:
+        print('std outputs zero', outputs.std())
+    if labels.std() == 0.0:
+        print('std labels zero', labels.std())
+
+    vo = outputs - torch.mean(outputs)
+    vl = labels - torch.mean(labels)
+    batch_size = outputs.shape[0]
+    eps = 1e-9 #void /0.0
+    lcc = torch.sum(vo*vl)/(outputs.std()*labels.std() + eps)/(batch_size-1)
+
+    loss = -1 * lcc
+    return loss
+
+def validation(net, validloader, epoch, global_step, device):
+    #valset
+    net.eval()
+    ## clear memory to avoid OOM
+    with torch.cuda.device(device):
+        torch.cuda.empty_cache()
+
+    ## validation
+    with torch.no_grad():
+        print('Starting validation')
+        filename_list = []
+        pred_score_list = []
+        gt_score_list = []
+        for i, data in enumerate(validloader, 0):
+            inputs, labels, filenames = data
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            outputs = net(inputs)
+
+            pred_scores = outputs.cpu().detach().numpy()
+            true_scores = labels.cpu().detach().numpy()
+
+            filename_list.extend(filenames)
+            pred_score_list.extend(pred_scores.tolist())
+            gt_score_list.extend(true_scores.tolist())
+
+        #calc pred sys scores and gt sys scores
+        predict_scores = np.array(pred_score_list)
+        true_scores = np.array(gt_score_list)
+        systems = list(set([x.split('-')[0] for x in filename_list]))
+        predict_sys_scores = {system:[] for system in systems}
+        true_sys_scores = {system:[] for system in systems}
+        for i in range(len(filename_list)):
+            filename = filename_list[i]
+            system = filename.split('-')[0]
+            pre_score = predict_scores[i]
+            gt_score = true_scores[i]
+            predict_sys_scores[system].append(pre_score)
+            true_sys_scores[system].append(gt_score)
+        predict_sys_scores = np.array([np.mean(scores) for scores in predict_sys_scores.values()])
+        true_sys_scores = np.array([np.mean(scores) for scores in true_sys_scores.values()])
+
+        utt_MSE=np.mean((true_scores-predict_scores)**2)
+        utt_LCC=np.corrcoef(true_scores, predict_scores)[0][1]
+        utt_SRCC=scipy.stats.spearmanr(true_scores, predict_scores)[0]
+        utt_KTAU=scipy.stats.kendalltau(true_scores, predict_scores)[0]
+        sys_MSE=np.mean((true_sys_scores-predict_sys_scores)**2)
+        sys_LCC=np.corrcoef(true_sys_scores, predict_sys_scores)[0][1]
+        sys_SRCC=scipy.stats.spearmanr(true_sys_scores, predict_sys_scores)[0]
+        sys_KTAU=scipy.stats.kendalltau(true_sys_scores, predict_sys_scores)[0]
+
+        net.train()
+        print(f"\n[{epoch}][UTT][ MSE = {utt_MSE:.4f} | LCC = {utt_LCC:.4f} | SRCC = {utt_SRCC:.4f} ] [SYS][ MSE = {sys_MSE:.4f} | LCC = {sys_LCC:.4f} | SRCC = {sys_SRCC:.4f} ]\n")
+        return utt_MSE, utt_LCC, utt_SRCC, utt_KTAU, sys_MSE, sys_LCC, sys_SRCC, sys_KTAU
+
 def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--datadir', type=str, required=True, help='Path of your DATA/ directory')
     parser.add_argument('--fairseq_base_model', type=str, required=True, help='Path to pretrained fairseq base model')
     parser.add_argument('--finetune_from_checkpoint', type=str, required=False, help='Path to your checkpoint to finetune from')
+    parser.add_argument('--sorter_checkpoint', type=str, required=False, help='Path to SoDeep pretrained checkpoint')
     parser.add_argument('--outdir', type=str, required=False, default='checkpoints', help='Output directory for your trained checkpoints')
     args = parser.parse_args()
 
@@ -86,7 +177,8 @@ def main():
     datadir = args.datadir
     ckptdir = args.outdir
     my_checkpoint = args.finetune_from_checkpoint
-    
+    sorter_checkpoint_path = args.sorter_checkpoint
+
     if not os.path.exists(ckptdir):
         os.system('mkdir -p ' + ckptdir)
     
@@ -111,10 +203,10 @@ def main():
     ssl_model.remove_pretraining_modules()
     
     trainset = MyDataset(wavdir, trainlist)
-    trainloader = DataLoader(trainset, batch_size=4, shuffle=True, num_workers=2, collate_fn=trainset.collate_fn)
+    trainloader = DataLoader(trainset, batch_size=4, shuffle=True, num_workers=2, collate_fn=trainset.collate_fn, drop_last=True)
 
     validset = MyDataset(wavdir, validlist)
-    validloader = DataLoader(validset, batch_size=2, shuffle=True, num_workers=2, collate_fn=validset.collate_fn)
+    validloader = DataLoader(validset, batch_size=1, shuffle=True, num_workers=2, collate_fn=validset.collate_fn)
 
     net = MosPredictor(ssl_model, SSL_OUT_DIM)
     net = net.to(device)
@@ -122,13 +214,15 @@ def main():
     if my_checkpoint != None:  ## do (further) finetuning
         net.load_state_dict(torch.load(my_checkpoint))
     
-    criterion = nn.L1Loss()
-    optimizer = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
+    criterion_mae = nn.L1Loss()
+    criterion_spr = SpearmanLoss(*load_sorter(sorter_checkpoint_path))
+    criterion_spr.to(device)
+    criterion_lcc = lcc_loss_fn
 
-    PREV_VAL_LOSS=9999999999
-    orig_patience=20
-    patience=orig_patience
-    for epoch in range(1,1001):
+    optimizer = optim.SGD(list(net.parameters())+list(criterion_spr.parameters()),  lr=0.0001, momentum=0.9)
+
+    global_step = 0
+    for epoch in range(1, 301):
         STEPS=0
         net.train()
         running_loss = 0.0
@@ -138,43 +232,34 @@ def main():
             labels = labels.to(device)
             optimizer.zero_grad()
             outputs = net(inputs)
-            loss = criterion(outputs, labels)
+
+            loss_mae = criterion_mae(outputs, labels)
+            loss_spr = criterion_spr(outputs, labels)
+            loss_lcc = criterion_lcc(outputs, labels)
+            loss = loss_mae + loss_spr + loss_lcc
+
             loss.backward()
             optimizer.step()
-            STEPS += 1
             running_loss += loss.item()
+            STEPS += 1
+            global_step += 1
+
         print('EPOCH: ' + str(epoch))
         print('AVG EPOCH TRAIN LOSS: ' + str(running_loss / STEPS))
-        epoch_val_loss = 0.0
-        net.eval()
-        ## clear memory to avoid OOM
-        with torch.cuda.device(device):
-            torch.cuda.empty_cache()
-        ## validation
-        VALSTEPS=0
-        for i, data in enumerate(validloader, 0):
-            VALSTEPS+=1
-            inputs, labels, filenames = data
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            outputs = net(inputs)
-            loss = criterion(outputs, labels)
-            epoch_val_loss += loss.item()
 
-        avg_val_loss=epoch_val_loss/VALSTEPS    
-        print('EPOCH VAL LOSS: ' + str(avg_val_loss))
-        if avg_val_loss < PREV_VAL_LOSS:
-            print('Loss has decreased')
-            PREV_VAL_LOSS=avg_val_loss
-            PATH = os.path.join(ckptdir, 'ckpt_' + str(epoch))
-            torch.save(net.state_dict(), PATH)
-            patience = orig_patience
-        else:
-            patience-=1
-            if patience == 0:
-                print('loss has not decreased for ' + str(orig_patience) + ' epochs; early stopping at epoch ' + str(epoch))
-                break
-        
+        ## validation
+        utt_MSE, utt_LCC, utt_SRCC, utt_KTAU,\
+        sys_MSE, sys_LCC, sys_SRCC, sys_KTAU = validation(net, validloader, epoch, global_step, device)
+
+        #recording data
+        save_results(epoch,
+                 [utt_MSE, utt_LCC, utt_SRCC, utt_KTAU], [sys_MSE, sys_LCC, sys_SRCC, sys_KTAU],
+                 os.path.join(ckptdir, "training_val" + ".csv"))
+
+        #save every epoch
+        PATH = os.path.join(ckptdir, 'ckpt_' + str(epoch) + '_' +  str(global_step))
+        torch.save(net.state_dict(), PATH)
+
     print('Finished Training')
 
 if __name__ == '__main__':
