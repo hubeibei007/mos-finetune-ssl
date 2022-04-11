@@ -169,7 +169,7 @@ def main():
     parser.add_argument('--datadir', type=str, required=True, help='Path of your DATA/ directory')
     parser.add_argument('--fairseq_base_model', type=str, required=True, help='Path to pretrained fairseq base model')
     parser.add_argument('--finetune_from_checkpoint', type=str, required=False, help='Path to your checkpoint to finetune from')
-    parser.add_argument('--sorter_checkpoint', type=str, required=False, help='Path to SoDeep pretrained checkpoint')
+    parser.add_argument('--sorter_checkpoint', type=str, required=False, default='sodeep_master/weights/best_model.pth.tar', help='Path to SoDeep pretrained checkpoint')
     parser.add_argument('--outdir', type=str, required=False, default='checkpoints', help='Output directory for your trained checkpoints')
     args = parser.parse_args()
 
