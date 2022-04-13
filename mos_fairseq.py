@@ -169,8 +169,10 @@ def main():
     parser.add_argument('--datadir', type=str, required=True, help='Path of your DATA/ directory')
     parser.add_argument('--fairseq_base_model', type=str, required=True, help='Path to pretrained fairseq base model')
     parser.add_argument('--finetune_from_checkpoint', type=str, required=False, help='Path to your checkpoint to finetune from')
-    parser.add_argument('--sorter_checkpoint', type=str, required=False, default='sodeep_master/weights/best_model.pth.tar', help='Path to SoDeep pretrained checkpoint')
     parser.add_argument('--outdir', type=str, required=False, default='checkpoints', help='Output directory for your trained checkpoints')
+    parser.add_argument('--sorter_checkpoint', type=str, required=False, default='sodeep_master/weights/best_model.pth.tar', help='Path to SoDeep pretrained checkpoint')
+    parser.add_argument('--enable_lccloss', action='store_true', help='enable lcc loss')
+    parser.add_argument('--enable_srloss', action='store_true', help='enable sr loss')
     args = parser.parse_args()
 
     cp_path = args.fairseq_base_model
@@ -215,11 +217,16 @@ def main():
         net.load_state_dict(torch.load(my_checkpoint))
     
     criterion_mae = nn.L1Loss()
-    criterion_spr = SpearmanLoss(*load_sorter(sorter_checkpoint_path))
-    criterion_spr.to(device)
-    criterion_lcc = lcc_loss_fn
+    if args.enable_srloss:
+        criterion_spr = SpearmanLoss(*load_sorter(sorter_checkpoint_path))
+        criterion_spr.to(device)
+    if args.enable_lccloss:
+        criterion_lcc = lcc_loss_fn
 
-    optimizer = optim.SGD(list(net.parameters())+list(criterion_spr.parameters()),  lr=0.0001, momentum=0.9)
+    if args.enable_srloss:
+        optimizer = optim.SGD(list(net.parameters())+list(criterion_spr.parameters()),  lr=0.0001, momentum=0.9)
+    else:
+        optimizer = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
 
     global_step = 0
     for epoch in range(1, 301):
@@ -234,9 +241,15 @@ def main():
             outputs = net(inputs)
 
             loss_mae = criterion_mae(outputs, labels)
-            loss_spr = criterion_spr(outputs, labels)
-            loss_lcc = criterion_lcc(outputs, labels)
-            loss = loss_mae + loss_spr + loss_lcc
+            loss = loss_mae
+
+            if args.enable_srloss:
+                loss_spr = criterion_spr(outputs, labels)
+                loss = loss + loss_spr
+
+            if args.enable_lccloss:
+                loss_lcc = criterion_lcc(outputs, labels)
+                loss = loss + loss_lcc
 
             loss.backward()
             optimizer.step()

@@ -1,21 +1,16 @@
 # Correlation Loss for MOS Prediction of Synthetic Speech
-This repository has the source codes for the paper "Correlation Loss for MOS Prediction of Synthetic Speech"(VoiceMOS Challenge).
+
+This is code for our paper in VoiceMOS Challenge:
+
+"Correlation Loss for MOS Prediction of Synthetic Speech" Beibei Hu, Qiang Li.
+
+Please cite this preprint if you use this code.
 
 <img src="png/arch.png">
 
 The baseline is https://github.com/nii-yamagishilab/mos-finetune-ssl
 
 The selected models in our paper can be obtrained here: https://voicemos-models.ajmide.com/voicemos_models/index.html
-
-updating...
-
-# Finetune SSL models for MOS prediction
-
-This is code for our paper which has been accepted to ICASSP 2022:
-
-"Generalization Ability of MOS Prediction Networks"  Erica Cooper, Wen-Chin Huang, Tomoki Toda, Junichi Yamagishi  https://arxiv.org/abs/2110.02635
-
-Please cite this preprint if you use this code.
 
 ## Dependencies:
 
@@ -26,12 +21,17 @@ Please cite this preprint if you use this code.
  * You also need to have a MOS dataset.  Datasets for the MOS prediction challenge will be released once the challenge starts.
 
 ## How to use
+The usage is almost same as the instructions in `VoiceMOS_baseline_README.md`
 
-Please see instructions in `VoiceMOS_baseline_README.md`
+We add two arguments for training or finetuning command: --enable_lccloss and --enable_srloss
 
-## Acknowledgments
+--enable_lccloss:  add LCC loss
 
-This study is supported by JST CREST grants JP- MJCR18A6, JPMJCR20D3, and JPMJCR19A3, and by MEXT KAKENHI grants 21K11951 and 21K19808. Thanks to the organizers of the Blizzard Challenge and Voice Conversion Challenge, and to Zhenhua Ling, Zhihang Xie, and Zhizheng Wu for answering our questions about past challenges.  Thanks also to the Fairseq team for making their code and models available.
+--enable_srloss: add Surrogate Ranking Loss
+
+for example:
+
+`python mos_fairseq.py --datadir data/phase1-main/DATA --fairseq_base_model fairseq/wav2vec_small.pt --outdir checkpoints --enable_lccloss --enable_srloss`
 
 ## License
 
